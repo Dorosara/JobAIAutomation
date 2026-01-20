@@ -1,6 +1,7 @@
 import React, { useEffect, useState } from 'react';
 import { supabase } from '../services/supabaseClient';
-import { Users, Briefcase, CheckCircle, XCircle, Clock, FileText, X, Plus, Mail, Eye, MapPin, DollarSign, List, Filter } from 'lucide-react';
+import { Users, Briefcase, CheckCircle, XCircle, Clock, FileText, X, Plus, Mail, Eye, MapPin, DollarSign, List, Filter, ArrowUpDown, Download, Printer, Calendar, Trash2 } from 'lucide-react';
+import ReactMarkdown from 'react-markdown';
 
 const RecruiterDashboard: React.FC = () => {
   const [activeTab, setActiveTab] = useState<'candidates' | 'jobs'>('candidates');
@@ -8,11 +9,17 @@ const RecruiterDashboard: React.FC = () => {
   const [myJobs, setMyJobs] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
   const [selectedJobFilter, setSelectedJobFilter] = useState<string>('all');
+  const [sortOption, setSortOption] = useState<string>('newest');
   
   // Modals State
   const [selectedApp, setSelectedApp] = useState<any | null>(null);
   const [viewJob, setViewJob] = useState<any | null>(null);
   const [showPostJob, setShowPostJob] = useState(false);
+
+  // Scheduling State
+  const [showScheduleModal, setShowScheduleModal] = useState(false);
+  const [scheduleApp, setScheduleApp] = useState<any | null>(null);
+  const [timeSlots, setTimeSlots] = useState<string[]>(['']);
   
   // Post Job Form State
   const [newJob, setNewJob] = useState({
@@ -50,9 +57,14 @@ const RecruiterDashboard: React.FC = () => {
         .from('applications')
         .select(`
           *,
-          profiles:user_id (full_name, email),
-          jobs:job_id (title, company, created_by),
-          resumes:user_id (resume_text)
+          profiles:user_id (
+            full_name, 
+            email,
+            resumes (
+              resume_text
+            )
+          ),
+          jobs:job_id (title, company, created_by)
         `)
         .order('applied_date', { ascending: false });
 
@@ -72,7 +84,7 @@ const RecruiterDashboard: React.FC = () => {
           coverLetter: item.cover_letter,
           applicantName: item.profiles?.full_name || 'Anonymous',
           applicantEmail: item.profiles?.email,
-          resumeText: item.resumes?.[0]?.resume_text || 'No Resume Found'
+          resumeText: item.profiles?.resumes?.[0]?.resume_text || 'No Resume Found'
         }));
         setApplications(formattedApps);
       }
@@ -83,26 +95,36 @@ const RecruiterDashboard: React.FC = () => {
     }
   };
 
-  const sendEmailNotification = async (email: string, status: string, jobTitle: string, company: string, candidateName: string) => {
-    console.group("📧 Sending Email Notification");
-    console.log(`To: ${email}`);
-    console.log(`Subject: Application Status Update - ${jobTitle} at ${company}`);
+  const sendEmailNotification = (email: string, status: string, jobTitle: string, company: string, candidateName: string, slots?: string[]) => {
+    const subject = `Application Status Update: ${jobTitle} at ${company}`;
+    let body = "";
     
-    let message = "";
     if (status === 'SHORTLISTED') {
-      message = `Dear ${candidateName},\n\nWe are pleased to inform you that your application for the ${jobTitle} position at ${company} has been shortlisted! We will be in touch shortly to schedule an interview.\n\nBest Regards,\nHiring Team`;
-    } else if (status === 'REJECTED') {
-      message = `Dear ${candidateName},\n\nThank you for the time you took to apply for the ${jobTitle} position at ${company}. After careful review, we have decided to proceed with other candidates who more closely match our current requirements.\n\nWe wish you the best in your job search.\n\nBest Regards,\nHiring Team`;
-    }
-    
-    console.log("Body:", message);
-    console.groupEnd();
+      let schedulingText = "";
+      if (slots && slots.length > 0) {
+          const formattedSlots = slots.map(s => {
+              if (!s) return '';
+              const date = new Date(s);
+              return `- ${date.toLocaleString([], {weekday: 'short', month: 'short', day: 'numeric', hour: '2-digit', minute:'2-digit'})}`;
+          }).filter(s => s).join('\n');
+          
+          if (formattedSlots) {
+             schedulingText = `\n\nWe would like to invite you for an interview. Please reply to this email to confirm your availability for one of the following time slots:\n\n${formattedSlots}\n\nIf none of these work, please propose a few times that suit you.`;
+          }
+      }
 
-    await new Promise(resolve => setTimeout(resolve, 800));
-    alert(`Email notification sent to ${email}:\n"Your application status has been updated to ${status}."`);
+      body = `Dear ${candidateName},\n\nWe are pleased to inform you that your application for the ${jobTitle} position at ${company} has been shortlisted!${schedulingText || "\n\nWe will be in touch shortly to schedule an interview."}\n\nBest Regards,\nThe Hiring Team at ${company}`;
+    } else if (status === 'REJECTED') {
+      body = `Dear ${candidateName},\n\nThank you for the time you took to apply for the ${jobTitle} position at ${company}. After careful review, we have decided to proceed with other candidates who more closely match our current requirements.\n\nWe wish you the best in your job search.\n\nBest Regards,\nThe Hiring Team at ${company}`;
+    }
+
+    if (body) {
+      // Open the user's default email client
+      window.location.href = `mailto:${email}?subject=${encodeURIComponent(subject)}&body=${encodeURIComponent(body)}`;
+    }
   };
 
-  const updateStatus = async (appId: string, newStatus: string) => {
+  const updateStatus = async (appId: string, newStatus: string, slots?: string[]) => {
     const { error } = await supabase
       .from('applications')
       .update({ status: newStatus })
@@ -120,7 +142,8 @@ const RecruiterDashboard: React.FC = () => {
            newStatus, 
            updatedApp.jobTitle, 
            updatedApp.company,
-           updatedApp.applicantName
+           updatedApp.applicantName,
+           slots
          );
       }
 
@@ -128,6 +151,39 @@ const RecruiterDashboard: React.FC = () => {
         setSelectedApp(prev => ({ ...prev, status: newStatus }));
       }
     }
+  };
+
+  const initiateShortlist = (app: any) => {
+    setScheduleApp(app);
+    // Initialize with a suggestion for tomorrow at 10 AM
+    const tomorrow = new Date();
+    tomorrow.setDate(tomorrow.getDate() + 1);
+    tomorrow.setHours(10, 0, 0, 0);
+    // Format required for datetime-local input: YYYY-MM-DDThh:mm
+    const defaultSlot = tomorrow.toISOString().slice(0, 16);
+    
+    setTimeSlots([defaultSlot]); 
+    setShowScheduleModal(true);
+  };
+
+  const handleConfirmShortlist = async () => {
+    if (!scheduleApp) return;
+    const validSlots = timeSlots.filter(s => s !== '');
+    await updateStatus(scheduleApp.id, 'SHORTLISTED', validSlots);
+    setShowScheduleModal(false);
+    setScheduleApp(null);
+  };
+
+  const handleSlotChange = (index: number, value: string) => {
+    const newSlots = [...timeSlots];
+    newSlots[index] = value;
+    setTimeSlots(newSlots);
+  };
+
+  const addSlot = () => setTimeSlots([...timeSlots, '']);
+  const removeSlot = (index: number) => {
+    const newSlots = timeSlots.filter((_, i) => i !== index);
+    setTimeSlots(newSlots);
   };
 
   const handlePostJob = async (e: React.FormEvent) => {
@@ -167,9 +223,19 @@ const RecruiterDashboard: React.FC = () => {
     }
   };
 
-  const filteredApplications = selectedJobFilter === 'all'
+  const filteredApplications = (selectedJobFilter === 'all'
     ? applications
-    : applications.filter(app => app.jobId === selectedJobFilter);
+    : applications.filter(app => app.jobId === selectedJobFilter))
+    .sort((a, b) => {
+        if (sortOption === 'newest') {
+            return new Date(b.appliedDate).getTime() - new Date(a.appliedDate).getTime();
+        } else if (sortOption === 'oldest') {
+            return new Date(a.appliedDate).getTime() - new Date(b.appliedDate).getTime();
+        } else if (sortOption === 'status') {
+            return a.status.localeCompare(b.status);
+        }
+        return 0;
+    });
 
   if (loading) return <div className="p-10 text-center">Loading Dashboard...</div>;
 
@@ -249,19 +315,37 @@ const RecruiterDashboard: React.FC = () => {
         {activeTab === 'candidates' ? (
              /* Candidates Table */
              <>
-             <div className="p-4 border-b border-slate-200 bg-slate-50 flex items-center gap-3">
-                <Filter size={16} className="text-slate-500" />
-                <span className="text-sm font-medium text-slate-600">Filter by Job:</span>
-                <select
-                    className="text-sm border-slate-300 rounded-md shadow-sm focus:border-blue-500 focus:ring-blue-500 p-1.5 bg-white border outline-none min-w-[200px]"
-                    value={selectedJobFilter}
-                    onChange={(e) => setSelectedJobFilter(e.target.value)}
-                >
-                    <option value="all">All Jobs</option>
-                    {myJobs.map(job => (
-                    <option key={job.id} value={job.id}>{job.title}</option>
-                    ))}
-                </select>
+             <div className="p-4 border-b border-slate-200 bg-slate-50 flex flex-wrap items-center gap-4">
+                <div className="flex items-center gap-2">
+                    <Filter size={16} className="text-slate-500" />
+                    <span className="text-sm font-medium text-slate-600">Filter:</span>
+                    <select
+                        className="text-sm border-slate-300 rounded-md shadow-sm focus:border-blue-500 focus:ring-blue-500 p-1.5 bg-white border outline-none min-w-[200px]"
+                        value={selectedJobFilter}
+                        onChange={(e) => setSelectedJobFilter(e.target.value)}
+                    >
+                        <option value="all">All Jobs</option>
+                        {myJobs.map(job => (
+                        <option key={job.id} value={job.id}>{job.title}</option>
+                        ))}
+                    </select>
+                </div>
+                
+                <div className="h-6 w-px bg-slate-200 hidden md:block"></div>
+
+                <div className="flex items-center gap-2">
+                    <ArrowUpDown size={16} className="text-slate-500" />
+                    <span className="text-sm font-medium text-slate-600">Sort:</span>
+                    <select
+                        className="text-sm border-slate-300 rounded-md shadow-sm focus:border-blue-500 focus:ring-blue-500 p-1.5 bg-white border outline-none min-w-[180px]"
+                        value={sortOption}
+                        onChange={(e) => setSortOption(e.target.value)}
+                    >
+                        <option value="newest">Date Applied (Newest)</option>
+                        <option value="oldest">Date Applied (Oldest)</option>
+                        <option value="status">Status</option>
+                    </select>
+                </div>
              </div>
              
              {filteredApplications.length === 0 ? (
@@ -305,9 +389,9 @@ const RecruiterDashboard: React.FC = () => {
                                     <td className="px-6 py-4">
                                         <div className="flex gap-2">
                                             <button 
-                                                onClick={(e) => { e.stopPropagation(); updateStatus(app.id, 'SHORTLISTED'); }}
-                                                className="p-1 hover:bg-green-100 text-slate-400 hover:text-green-600 rounded" title="Shortlist & Notify">
-                                                <CheckCircle size={18} />
+                                                onClick={(e) => { e.stopPropagation(); initiateShortlist(app); }}
+                                                className="p-1 hover:bg-green-100 text-slate-400 hover:text-green-600 rounded" title="Shortlist & Schedule">
+                                                <Calendar size={18} />
                                             </button>
                                             <button 
                                                 onClick={(e) => { e.stopPropagation(); updateStatus(app.id, 'REJECTED'); }}
@@ -433,6 +517,68 @@ const RecruiterDashboard: React.FC = () => {
         </div>
       )}
 
+      {/* Schedule Interview Modal */}
+      {showScheduleModal && scheduleApp && (
+        <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4">
+            <div className="bg-white rounded-xl shadow-2xl w-full max-w-md">
+                <div className="p-6 border-b border-slate-200 flex justify-between items-center bg-slate-50 rounded-t-xl">
+                    <h2 className="text-lg font-bold text-slate-800 flex items-center gap-2">
+                        <Calendar className="text-blue-600" size={20} /> Schedule Interview
+                    </h2>
+                    <button onClick={() => setShowScheduleModal(false)} className="p-2 hover:bg-slate-200 rounded-full">
+                        <X size={20} />
+                    </button>
+                </div>
+                
+                <div className="p-6 space-y-4">
+                    <p className="text-sm text-slate-600">
+                        Suggest available time slots for <strong>{scheduleApp.applicantName}</strong>. 
+                        These will be included in the email notification.
+                    </p>
+                    
+                    <div className="space-y-3">
+                        {timeSlots.map((slot, index) => (
+                            <div key={index} className="flex gap-2">
+                                <input 
+                                    type="datetime-local" 
+                                    className="w-full px-3 py-2 border border-slate-200 rounded-lg text-sm focus:ring-2 focus:ring-blue-500 outline-none"
+                                    value={slot}
+                                    onChange={(e) => handleSlotChange(index, e.target.value)}
+                                />
+                                {timeSlots.length > 1 && (
+                                    <button 
+                                        onClick={() => removeSlot(index)}
+                                        className="p-2 text-slate-400 hover:text-red-500 hover:bg-red-50 rounded-lg transition-colors">
+                                        <Trash2 size={18} />
+                                    </button>
+                                )}
+                            </div>
+                        ))}
+                    </div>
+
+                    <button 
+                        onClick={addSlot}
+                        className="text-sm text-blue-600 font-medium hover:text-blue-700 flex items-center gap-1">
+                        <Plus size={16} /> Add another slot
+                    </button>
+
+                    <div className="pt-4 border-t border-slate-100 flex justify-end gap-3">
+                        <button 
+                            onClick={() => setShowScheduleModal(false)}
+                            className="px-4 py-2 border border-slate-200 text-slate-600 rounded-lg font-medium hover:bg-slate-50 text-sm">
+                            Cancel
+                        </button>
+                        <button 
+                            onClick={handleConfirmShortlist}
+                            className="px-4 py-2 bg-blue-600 text-white rounded-lg font-medium hover:bg-blue-700 text-sm shadow-md shadow-blue-200">
+                            Confirm & Send Email
+                        </button>
+                    </div>
+                </div>
+            </div>
+        </div>
+      )}
+
       {/* View Job Details Modal */}
       {viewJob && (
         <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4">
@@ -508,7 +654,7 @@ const RecruiterDashboard: React.FC = () => {
       {/* Candidate Details Modal */}
       {selectedApp && (
         <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4">
-            <div className="bg-white rounded-xl shadow-2xl w-full max-w-4xl max-h-[90vh] flex flex-col">
+            <div className="bg-white rounded-xl shadow-2xl w-full max-w-6xl max-h-[95vh] flex flex-col">
                 <div className="p-6 border-b border-slate-200 flex justify-between items-center bg-slate-50 rounded-t-xl">
                     <div>
                         <h2 className="text-xl font-bold text-slate-800">{selectedApp.applicantName}</h2>
@@ -519,36 +665,62 @@ const RecruiterDashboard: React.FC = () => {
                     </button>
                 </div>
                 
-                <div className="flex-1 overflow-y-auto p-6 grid grid-cols-1 md:grid-cols-2 gap-8">
-                    <div>
-                        <h3 className="font-bold text-slate-800 mb-3 flex items-center gap-2">
-                            <Briefcase size={18} /> AI Cover Letter
-                        </h3>
-                        <div className="bg-slate-50 p-4 rounded-lg text-sm text-slate-700 whitespace-pre-wrap border border-slate-200">
-                            {selectedApp.coverLetter}
+                <div className="flex-1 overflow-y-auto p-6 grid grid-cols-1 md:grid-cols-2 gap-8 bg-slate-50">
+                    <div className="flex flex-col h-full">
+                        <div className="flex justify-between items-center mb-3">
+                            <h3 className="font-bold text-slate-800 flex items-center gap-2">
+                                <Briefcase size={18} className="text-blue-600" /> AI Cover Letter
+                            </h3>
+                        </div>
+                        <div className="bg-white p-6 rounded-xl shadow-sm border border-slate-200 text-sm text-slate-700 whitespace-pre-wrap leading-relaxed flex-1 overflow-y-auto">
+                            {selectedApp.coverLetter || <span className="text-slate-400 italic">No cover letter submitted.</span>}
                         </div>
                     </div>
                     
-                    <div>
-                        <h3 className="font-bold text-slate-800 mb-3 flex items-center gap-2">
-                            <FileText size={18} /> Resume (Markdown)
-                        </h3>
-                        <div className="bg-slate-900 p-4 rounded-lg text-sm text-slate-300 whitespace-pre-wrap font-mono h-[400px] overflow-y-auto">
-                            {selectedApp.resumeText}
+                    <div className="flex flex-col h-full">
+                        <div className="flex justify-between items-center mb-3">
+                            <h3 className="font-bold text-slate-800 flex items-center gap-2">
+                                <FileText size={18} className="text-blue-600" /> Resume
+                            </h3>
+                            <div className="flex gap-2">
+                                <button className="text-slate-400 hover:text-blue-600 transition-colors p-1" title="Download">
+                                    <Download size={16} />
+                                </button>
+                                <button className="text-slate-400 hover:text-blue-600 transition-colors p-1" title="Print">
+                                    <Printer size={16} />
+                                </button>
+                            </div>
+                        </div>
+                        <div className="bg-white p-8 rounded-xl shadow-sm border border-slate-200 flex-1 overflow-y-auto max-h-[600px] prose-sm">
+                            <ReactMarkdown 
+                                components={{
+                                    h1: ({node, ...props}) => <h1 className="text-2xl font-bold mb-4 text-slate-900 border-b-2 border-slate-100 pb-2" {...props} />,
+                                    h2: ({node, ...props}) => <h2 className="text-xl font-bold mt-6 mb-3 text-slate-800 border-b border-slate-50 pb-1" {...props} />,
+                                    h3: ({node, ...props}) => <h3 className="text-lg font-semibold mt-4 mb-2 text-slate-800" {...props} />,
+                                    p: ({node, ...props}) => <p className="text-sm text-slate-600 mb-3 leading-relaxed" {...props} />,
+                                    ul: ({node, ...props}) => <ul className="list-disc pl-5 mb-4 text-sm text-slate-600 space-y-1" {...props} />,
+                                    ol: ({node, ...props}) => <ol className="list-decimal pl-5 mb-4 text-sm text-slate-600 space-y-1" {...props} />,
+                                    li: ({node, ...props}) => <li className="pl-1" {...props} />,
+                                    strong: ({node, ...props}) => <strong className="font-semibold text-slate-900" {...props} />,
+                                    blockquote: ({node, ...props}) => <blockquote className="border-l-4 border-slate-200 pl-4 italic text-slate-500 my-4" {...props} />,
+                                }}
+                            >
+                                {selectedApp.resumeText || '_No resume content available_'}
+                            </ReactMarkdown>
                         </div>
                     </div>
                 </div>
 
-                <div className="p-6 border-t border-slate-200 bg-slate-50 rounded-b-xl flex justify-end gap-3">
+                <div className="p-6 border-t border-slate-200 bg-white rounded-b-xl flex justify-end gap-3 shadow-[0_-4px_6px_-1px_rgba(0,0,0,0.05)]">
                     <button 
                         onClick={() => updateStatus(selectedApp.id, 'REJECTED')}
-                        className="px-4 py-2 border border-red-200 text-red-700 rounded-lg font-medium hover:bg-red-50 flex items-center gap-2">
-                        <Mail size={16} /> Reject & Notify
+                        className="px-4 py-2 border border-red-200 text-red-700 rounded-lg font-medium hover:bg-red-50 flex items-center gap-2 transition-colors">
+                        <XCircle size={18} /> Reject & Notify
                     </button>
                     <button 
-                        onClick={() => updateStatus(selectedApp.id, 'SHORTLISTED')}
-                        className="px-4 py-2 bg-green-600 text-white rounded-lg font-medium hover:bg-green-700 flex items-center gap-2">
-                        <Mail size={16} /> Shortlist & Notify
+                        onClick={() => initiateShortlist(selectedApp)}
+                        className="px-4 py-2 bg-green-600 text-white rounded-lg font-medium hover:bg-green-700 flex items-center gap-2 transition-colors shadow-lg shadow-green-200">
+                        <CheckCircle size={18} /> Shortlist & Notify
                     </button>
                 </div>
             </div>
